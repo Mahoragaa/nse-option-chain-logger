@@ -1,0 +1,15 @@
+symbol: NIFTY
+expiry: null
+strikes:
+  - 24500
+  - 24600
+  - 24700
+auto_atm: false
+auto_atm_window: 2
+interval_minutes: 3
+start_time: "09:15:00"
+end_time: "15:15:00"
+alert_oi_change: 100
+alert_pcr: 1.5
+output_dir: output
+data_dir: data
