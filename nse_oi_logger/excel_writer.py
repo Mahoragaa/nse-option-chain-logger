@@ -1,19 +1,29 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
+from typing import TypeAlias
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
-def build_summary_metrics(rows_by_strike: dict[int, list[dict]]) -> dict[str, float | int | str]:
+StrikeExpiry: TypeAlias = int | tuple[int, str]
+
+
+def strike_sheet_name(key: StrikeExpiry) -> str:
+    if isinstance(key, tuple):
+        return f"{key[0]}_{key[1]}"[:31]
+    return str(key)
+
+
+def build_summary_metrics(rows_by_strike: dict[StrikeExpiry, list[dict]]) -> dict[str, float | int | str]:
     latest_rows = []
-    for strike, rows in rows_by_strike.items():
+    for key, rows in rows_by_strike.items():
         if rows:
             latest_row = rows[-1]
+            strike = key[0] if isinstance(key, tuple) else key
             latest_row = {"strike": strike, **latest_row}
             latest_rows.append(latest_row)
 
@@ -49,7 +59,12 @@ def build_summary_metrics(rows_by_strike: dict[int, list[dict]]) -> dict[str, fl
     }
 
 
-def write_daily_workbook(output_dir: str | Path, symbol: str, rows_by_strike: dict[int, list[dict]], trade_date: datetime | None = None) -> str:
+def write_daily_workbook(
+    output_dir: str | Path,
+    symbol: str,
+    rows_by_strike: dict[StrikeExpiry, list[dict]],
+    trade_date: datetime | None = None,
+) -> str:
     if trade_date is None:
         trade_date = datetime.now()
     output_path = Path(output_dir)
@@ -88,32 +103,39 @@ def write_daily_workbook(output_dir: str | Path, symbol: str, rows_by_strike: di
     summary_sheet.column_dimensions["B"].width = 16
     summary_sheet.auto_filter.ref = summary_sheet.dimensions
 
-    for strike, rows in rows_by_strike.items():
-        sheet = wb.create_sheet(str(strike))
+    for strike_key, rows in rows_by_strike.items():
+        sheet = wb.create_sheet(strike_sheet_name(strike_key))
         sheet.sheet_view.showGridLines = True
-        sheet.append([
+        headers = [
             "Time",
             "Strike",
             "Call OI",
             "Call Change in OI",
             "Put OI",
             "Put Change in OI",
-        ])
+        ]
+        if isinstance(strike_key, tuple):
+            headers.append("Expiry")
+        sheet.append(headers)
         for row in rows:
-            sheet.append([
+            values = [
                 row.get("time_slot"),
                 row.get("strike"),
                 row.get("call_oi"),
                 row.get("call_change_oi"),
                 row.get("put_oi"),
                 row.get("put_change_oi"),
-            ])
+            ]
+            if isinstance(strike_key, tuple):
+                values.append(row.get("expiry", strike_key[1]))
+            sheet.append(values)
         for cell in sheet[1]:
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center")
             cell.border = table_border
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=6):
+        column_count = len(headers)
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=column_count):
             for cell in row:
                 cell.alignment = Alignment(horizontal="center")
                 cell.border = table_border
@@ -129,7 +151,8 @@ def write_daily_workbook(output_dir: str | Path, symbol: str, rows_by_strike: di
     for sheet in wb.worksheets:
         if sheet.title == "Summary":
             continue
-        for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=6):
+        column_count = sheet.max_column
+        for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=column_count):
             for cell in row:
                 if cell.row == 1:
                     cell.fill = title_fill

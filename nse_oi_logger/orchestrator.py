@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from nse_oi_logger.excel_writer import write_daily_workbook
 from nse_oi_logger.fetcher import NseFetcher
@@ -12,7 +13,21 @@ from nse_oi_logger.store import SQLiteStore
 
 
 class OptionChainLogger:
-    def __init__(self, symbol: str, expiry: str | None, strikes: list[int], db_path: str | Path, output_dir: str | Path, auto_atm: bool = False, atm_window: int = 2):
+    def __init__(
+        self,
+        symbol: str,
+        expiry: str | None,
+        strikes: list[int],
+        db_path: str | Path,
+        output_dir: str | Path,
+        auto_atm: bool = False,
+        atm_window: int = 2,
+        workbook_publisher: Callable[
+            [str, dict[int | tuple[int, str], list[dict]], datetime], str
+        ]
+        | None = None,
+        strike_expiries: dict[int, list[str]] | None = None,
+    ):
         self.symbol = symbol.upper()
         self.expiry = expiry
         self.strikes = list(strikes)
@@ -20,6 +35,8 @@ class OptionChainLogger:
         self.output_dir = Path(output_dir)
         self.auto_atm = auto_atm
         self.atm_window = atm_window
+        self.workbook_publisher = workbook_publisher
+        self.strike_expiries = strike_expiries
         self.store = SQLiteStore(self.db_path)
 
     def _resolve_expiry(self, payload: dict) -> str:
@@ -57,23 +74,61 @@ class OptionChainLogger:
             return f"Skipped cycle outside market hours for {self.symbol} at {now:%Y-%m-%d %H:%M:%S}"
 
         fetcher = NseFetcher()
-        payload = fetcher.fetch_chain(self.symbol, self.expiry)
-        expiry_value = self._resolve_expiry(payload)
-        selected = self._resolve_strikes(payload)
-        rows = extract_strike_rows(payload, self.symbol, expiry_value, now, set(selected))
+        rows: list[dict] = []
+        selected_pairs: list[tuple[int, str]] = []
+        if self.strike_expiries is not None:
+            strikes_by_expiry: dict[str, set[int]] = {}
+            for strike, expiries in self.strike_expiries.items():
+                for expiry in expiries:
+                    strikes_by_expiry.setdefault(expiry, set()).add(strike)
+                    selected_pairs.append((strike, expiry))
+            for expiry, selected_strikes in strikes_by_expiry.items():
+                payload = fetcher.fetch_chain(self.symbol, expiry)
+                rows.extend(
+                    extract_strike_rows(
+                        payload,
+                        self.symbol,
+                        expiry,
+                        now,
+                        selected_strikes,
+                    )
+                )
+            rows_by_strike: dict[int | tuple[int, str], list[dict]] = {}
+        else:
+            payload = fetcher.fetch_chain(self.symbol, self.expiry)
+            expiry_value = self._resolve_expiry(payload)
+            selected = self._resolve_strikes(payload)
+            rows.extend(
+                extract_strike_rows(payload, self.symbol, expiry_value, now, set(selected))
+            )
 
         if not rows:
-            return f"No option rows found for {self.symbol} and expiry {expiry_value} at {now:%H:%M:%S}"
+            return f"No option rows found for {self.symbol} and the configured expiries at {now:%H:%M:%S}"
 
         inserted = self.store.insert_rows(rows)
-        persisted_rows = self.store.fetch_rows_for_symbol(self.symbol, expiry_value, selected)
-        workbook_path = write_daily_workbook(
-            self.output_dir,
-            self.symbol,
-            {strike: persisted_rows.get(strike, []) for strike in selected},
-            trade_date=now,
-        )
+        if self.strike_expiries is not None:
+            rows_by_strike = {
+                pair: self.store.fetch_rows_for_strike(self.symbol, pair[1], pair[0])
+                for pair in selected_pairs
+            }
+            expiry_description = ", ".join(
+                f"{strike}: {', '.join(expiries)}"
+                for strike, expiries in self.strike_expiries.items()
+            )
+        else:
+            persisted_rows = self.store.fetch_rows_for_symbol(self.symbol, expiry_value, selected)
+            rows_by_strike = {strike: persisted_rows.get(strike, []) for strike in selected}
+            expiry_description = expiry_value
+        if self.workbook_publisher is not None:
+            workbook_path = self.workbook_publisher(self.symbol, rows_by_strike, now)
+        else:
+            workbook_path = write_daily_workbook(
+                self.output_dir,
+                self.symbol,
+                rows_by_strike,
+                trade_date=now,
+            )
         return (
-            f"Processed {self.symbol} {expiry_value} at {now:%H:%M:%S}; "
+            f"Processed {self.symbol} expiries [{expiry_description}] at {now:%H:%M:%S}; "
             f"inserted={inserted}; workbook={workbook_path}"
         )

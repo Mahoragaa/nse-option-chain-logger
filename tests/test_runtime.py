@@ -1,7 +1,9 @@
 from datetime import datetime
+from threading import Event
 
 from nse_oi_logger.scheduler import generate_market_slots, is_within_market_hours, next_run_time
 from nse_oi_logger.store import SQLiteStore
+from nse_oi_logger.main import start_scheduler
 
 
 def test_generate_market_slots_count():
@@ -47,3 +49,46 @@ def test_store_deduplicates_same_row(tmp_path):
 def test_is_within_market_hours():
     assert is_within_market_hours(datetime(2026, 10, 18, 9, 15, 0)) is True
     assert is_within_market_hours(datetime(2026, 10, 18, 15, 16, 0)) is False
+
+
+def test_start_scheduler_stops_when_requested(monkeypatch, tmp_path):
+    stop_event = Event()
+    stop_event.set()
+    statuses = []
+    shutdown_calls = []
+
+    class FakeScheduler:
+        def __init__(self, timezone):
+            assert timezone == "Asia/Kolkata"
+
+        def add_job(self, func, **kwargs):
+            assert callable(func)
+            assert kwargs
+            return None
+
+        def add_listener(self, listener, event_mask):
+            assert callable(listener)
+            assert event_mask
+            return None
+
+        def start(self):
+            return None
+
+        def shutdown(self, wait):
+            shutdown_calls.append(wait)
+
+    monkeypatch.setattr("nse_oi_logger.main.BackgroundScheduler", FakeScheduler)
+
+    start_scheduler(
+        "NIFTY",
+        None,
+        [23000],
+        db_path=tmp_path / "options.db",
+        output_dir=tmp_path / "output",
+        on_status=statuses.append,
+        stop_event=stop_event,
+    )
+
+    assert shutdown_calls == [True]
+    assert statuses[0].startswith("Schedule started")
+    assert statuses[-1] == "Schedule stopped."

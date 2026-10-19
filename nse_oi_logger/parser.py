@@ -4,6 +4,15 @@ from datetime import datetime
 from typing import Any
 
 
+def _canonical_expiry(value: str) -> str:
+    for date_format in ("%Y-%m-%d", "%d-%b-%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(value, date_format).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return value
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -57,11 +66,20 @@ def normalize_option_row(payload: dict[str, Any], symbol: str, expiry: str, slot
     }
 
 
-def extract_strike_rows(raw_data: dict[str, Any], symbol: str, expiry: str, slot_dt: datetime, selected_strikes: set[int]) -> list[dict[str, Any]]:
+def extract_strike_rows(
+    raw_data: dict[str, Any],
+    symbol: str,
+    expiry: str,
+    slot_dt: datetime,
+    selected_strikes: set[int],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in raw_data.get("records", {}).get("data", []) or []:
         strike = int(_safe_float(item.get("strikePrice"), 0))
         if strike not in selected_strikes:
+            continue
+        item_expiry = item.get("expiryDate") or item.get("expiryDates")
+        if item_expiry and _canonical_expiry(str(item_expiry)) != _canonical_expiry(expiry):
             continue
         rows.append(normalize_option_row(item, symbol, expiry, slot_dt, strike))
     return rows

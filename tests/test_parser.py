@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from nse_oi_logger.parser import normalize_option_row
+from nse_oi_logger.parser import extract_strike_rows, normalize_option_row
 
 
 def test_normalize_option_row():
@@ -34,3 +34,25 @@ def test_normalize_option_row():
     assert result["time_slot"] == "09:18:00"
     assert result["pcr"] == 0.75
     assert result["net_change_oi"] == -140
+
+
+def test_extract_strike_rows_filters_to_requested_expiry():
+    raw_data = {
+        "records": {
+            "data": [
+                {"strikePrice": 23000, "expiryDates": "22-Oct-2026", "CE": {}, "PE": {}},
+                {"strikePrice": 23000, "expiryDates": "29-Oct-2026", "CE": {}, "PE": {}},
+            ]
+        }
+    }
+
+    rows = extract_strike_rows(
+        raw_data,
+        "NIFTY",
+        "2026-10-22",
+        datetime(2026, 10, 19, 9, 18),
+        {23000},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["expiry"] == "2026-10-22"
